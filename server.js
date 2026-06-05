@@ -73,8 +73,8 @@ function setupSelfPing() {
         return;
     }
     
-    // Пингуем каждые 10 минут (бесплатный тариф Render засыпает после 15 минут неактивности)
-    cron.schedule('*/10 * * * *', async () => {
+    // Пингуем каждые 5 минут (бесплатный тариф Render засыпает после 15 минут неактивности)
+    cron.schedule('*/5 * * * *', async () => {
         try {
             const response = await axios.get(`${config.renderUrl}/health`);
             console.log(`🏓 Самопинг выполнен: ${response.data.status} - ${new Date().toISOString()}`);
@@ -83,7 +83,7 @@ function setupSelfPing() {
         }
     });
     
-    console.log('✅ Самопинг настроен (каждые 10 минут)');
+    console.log('✅ Самопинг настроен (каждые 5 минут)');
 }
 
 // Запуск сервера
