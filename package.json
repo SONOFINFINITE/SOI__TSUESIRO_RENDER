@@ -1,0 +1,26 @@
+{
+  "name": "twitch-bot-render",
+  "version": "1.0.0",
+  "description": "Twitch bot для Render.com с самопингом",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file=.env server.js",
+    "dev": "nodemon --env-file=.env server.js"
+  },
+  "keywords": ["twitch", "bot", "render"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "tmi.js": "^1.8.5",
+    "express": "^4.21.1",
+    "axios": "^1.7.2",
+    "node-cron": "^3.0.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
