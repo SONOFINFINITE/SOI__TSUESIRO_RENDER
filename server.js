@@ -13,7 +13,7 @@ const config = {
     broadcasterId: process.env.BROADCASTER_ID || '144394710',
     moderatorId: process.env.MODERATOR_ID || '1046743105',
     port: process.env.PORT || 3000,
-    renderUrl: process.env.RENDER_URL || ''
+    renderUrl: process.env.RNDR_URL || ''
 };
 
 // Создаём Express приложение
