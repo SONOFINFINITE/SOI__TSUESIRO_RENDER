@@ -15,8 +15,7 @@ const config = {
     moderatorId: process.env.MODERATOR_ID || '1046743105',
     port: process.env.PORT || 3000,
     renderUrl: process.env.RNDR_URL || '',
-    eventsubSecret: process.env.EVENTSUB_SECRET || 'my-eventsub-secret',
-    clientSecret: process.env.TWITCH_CLIENT_SECRET || ''
+    eventsubSecret: process.env.EVENTSUB_SECRET || 'my-eventsub-secret'
 };
 
 // Создаём Express приложение
@@ -182,23 +181,11 @@ app.post('/eventsub', (req, res) => {
 
 // ─── Регистрация EventSub подписок ──────────────────────────────────────────
 
-// Получение App Access Token (client_credentials) — требуется для EventSub webhook
-async function getAppAccessToken() {
-    const response = await axios.post('https://id.twitch.tv/oauth2/token', null, {
-        params: {
-            client_id: config.clientId,
-            client_secret: config.clientSecret,
-            grant_type: 'client_credentials'
-        }
-    });
-    return response.data.access_token;
-}
-
-async function deleteExistingSubscriptions(appToken) {
+async function deleteExistingSubscriptions() {
     try {
         const response = await axios.get('https://api.twitch.tv/helix/eventsub/subscriptions', {
             headers: {
-                'Authorization': `Bearer ${appToken}`,
+                'Authorization': `Bearer ${config.accessToken}`,
                 'Client-Id': config.clientId
             }
         });
@@ -211,7 +198,7 @@ async function deleteExistingSubscriptions(appToken) {
         for (const sub of subs) {
             await axios.delete(`https://api.twitch.tv/helix/eventsub/subscriptions?id=${sub.id}`, {
                 headers: {
-                    'Authorization': `Bearer ${appToken}`,
+                    'Authorization': `Bearer ${config.accessToken}`,
                     'Client-Id': config.clientId
                 }
             });
@@ -228,20 +215,11 @@ async function subscribeToStreamEvents() {
         return;
     }
 
-    let appToken;
-    try {
-        appToken = await getAppAccessToken();
-        console.log('✅ App Access Token получен');
-    } catch (error) {
-        console.error('❌ Не удалось получить App Access Token:', error.response?.data || error.message);
-        return;
-    }
-
-    await deleteExistingSubscriptions(appToken);
+    await deleteExistingSubscriptions();
 
     const callbackUrl = `${config.renderUrl}/eventsub`;
     const headers = {
-        'Authorization': `Bearer ${appToken}`,
+        'Authorization': `Bearer ${config.accessToken}`,
         'Client-Id': config.clientId,
         'Content-Type': 'application/json'
     };
