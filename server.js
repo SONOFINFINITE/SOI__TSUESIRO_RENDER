@@ -1,6 +1,7 @@
 import express from 'express';
 import cron from 'node-cron';
 import axios from 'axios';
+import crypto from 'crypto';
 import { TwitchBot } from './bot.js';
 
 // Загрузка переменных окружения
@@ -13,7 +14,8 @@ const config = {
     broadcasterId: process.env.BROADCASTER_ID || '144394710',
     moderatorId: process.env.MODERATOR_ID || '1046743105',
     port: process.env.PORT || 3000,
-    renderUrl: process.env.RNDR_URL || ''
+    renderUrl: process.env.RNDR_URL || '',
+    eventsubSecret: process.env.EVENTSUB_SECRET || 'my-eventsub-secret'
 };
 
 // Создаём Express приложение
@@ -86,34 +88,178 @@ function setupSelfPing() {
     console.log('✅ Самопинг настроен (каждые 5 минут)');
 }
 
-// Запуск сервера
-app.listen(config.port, () => {
+// ─── EventSub: плановые сообщения по вебхукам ───────────────────────────────
+
+const SCHEDULED_MESSAGE = 'Если хотите знать о СыСществовании вне стримов,  то добро пожаловать на мою тг грядку t.me/cbicran';
+const CHAT_INTERVAL_MS = 25 * 60 * 1000; // 25 минут
+
+let scheduledMessageInterval = null;
+
+function startScheduledMessages() {
+    if (scheduledMessageInterval) return; // уже запущен
+    console.log('▶️  Стрим онлайн — запускаем плановые сообщения каждые 25 минут');
+
+    scheduledMessageInterval = setInterval(async () => {
+        if (!bot) return;
+        try {
+            await bot.client.say(`#${config.channel}`, SCHEDULED_MESSAGE);
+            console.log(`📨 Плановое сообщение отправлено в ${new Date().toISOString()}`);
+        } catch (error) {
+            console.error('❌ Ошибка при отправке планового сообщения:', error.message);
+        }
+    }, CHAT_INTERVAL_MS);
+}
+
+function stopScheduledMessages() {
+    if (!scheduledMessageInterval) return;
+    clearInterval(scheduledMessageInterval);
+    scheduledMessageInterval = null;
+    console.log('⏹️  Стрим оффлайн — плановые сообщения остановлены');
+}
+
+// Верификация подписи Twitch EventSub
+function verifyEventSubSignature(req) {
+    const messageId = req.headers['twitch-eventsub-message-id'];
+    const timestamp = req.headers['twitch-eventsub-message-timestamp'];
+    const signature = req.headers['twitch-eventsub-message-signature'];
+
+    if (!messageId || !timestamp || !signature) return false;
+
+    const hmacMessage = messageId + timestamp + req.rawBody;
+    const expectedSignature = 'sha256=' + crypto
+        .createHmac('sha256', config.eventsubSecret)
+        .update(hmacMessage)
+        .digest('hex');
+
+    return crypto.timingSafeEqual(
+        Buffer.from(signature),
+        Buffer.from(expectedSignature)
+    );
+}
+
+// Middleware для сохранения raw body (нужен для подписи EventSub)
+app.use('/eventsub', express.json({
+    verify: (req, _res, buf) => {
+        req.rawBody = buf.toString();
+    }
+}));
+
+// Webhook endpoint для Twitch EventSub
+app.post('/eventsub', (req, res) => {
+    if (!verifyEventSubSignature(req)) {
+        console.warn('⚠️  EventSub: неверная подпись, запрос отклонён');
+        return res.status(403).send('Forbidden');
+    }
+
+    const messageType = req.headers['twitch-eventsub-message-type'];
+
+    // Верификация подписки (разовый запрос при создании)
+    if (messageType === 'webhook_callback_verification') {
+        console.log('✅ EventSub подписка подтверждена');
+        return res.status(200).send(req.body.challenge);
+    }
+
+    // Отписка (Twitch отменил подписку)
+    if (messageType === 'revocation') {
+        console.warn('⚠️  EventSub подписка отозвана:', req.body.subscription?.type);
+        return res.sendStatus(204);
+    }
+
+    // Событие
+    if (messageType === 'notification') {
+        const eventType = req.body.subscription?.type;
+
+        if (eventType === 'stream.online') {
+            startScheduledMessages();
+        } else if (eventType === 'stream.offline') {
+            stopScheduledMessages();
+        }
+    }
+
+    res.sendStatus(204);
+});
+
+// ─── Регистрация EventSub подписок ──────────────────────────────────────────
+
+async function deleteExistingSubscriptions() {
+    try {
+        const response = await axios.get('https://api.twitch.tv/helix/eventsub/subscriptions', {
+            headers: {
+                'Authorization': `Bearer ${config.accessToken}`,
+                'Client-Id': config.clientId
+            }
+        });
+
+        const subs = response.data.data.filter(s =>
+            (s.type === 'stream.online' || s.type === 'stream.offline') &&
+            s.condition?.broadcaster_user_id === config.broadcasterId
+        );
+
+        for (const sub of subs) {
+            await axios.delete(`https://api.twitch.tv/helix/eventsub/subscriptions?id=${sub.id}`, {
+                headers: {
+                    'Authorization': `Bearer ${config.accessToken}`,
+                    'Client-Id': config.clientId
+                }
+            });
+            console.log(`🗑️  Удалена старая подписка: ${sub.type} (${sub.id})`);
+        }
+    } catch (error) {
+        console.error('❌ Ошибка при удалении старых подписок:', error.response?.data || error.message);
+    }
+}
+
+async function subscribeToStreamEvents() {
+    if (!config.renderUrl) {
+        console.warn('⚠️  RENDER_URL не задан — EventSub подписки не будут зарегистрированы');
+        return;
+    }
+
+    await deleteExistingSubscriptions();
+
+    const callbackUrl = `${config.renderUrl}/eventsub`;
+    const headers = {
+        'Authorization': `Bearer ${config.accessToken}`,
+        'Client-Id': config.clientId,
+        'Content-Type': 'application/json'
+    };
+
+    const types = ['stream.online', 'stream.offline'];
+
+    for (const type of types) {
+        try {
+            await axios.post('https://api.twitch.tv/helix/eventsub/subscriptions', {
+                type,
+                version: '1',
+                condition: { broadcaster_user_id: config.broadcasterId },
+                transport: {
+                    method: 'webhook',
+                    callback: callbackUrl,
+                    secret: config.eventsubSecret
+                }
+            }, { headers });
+            console.log(`✅ EventSub подписка создана: ${type}`);
+        } catch (error) {
+            console.error(`❌ Ошибка создания подписки ${type}:`, error.response?.data || error.message);
+        }
+    }
+}
+
+// ─── Запуск сервера ──────────────────────────────────────────────────────────
+
+app.listen(config.port, async () => {
     console.log(`🌐 Сервер запущен на порту ${config.port}`);
     console.log(`📡 Health check: http://localhost:${config.port}/health`);
     console.log(`📊 Статистика: http://localhost:${config.port}/stats`);
     
     // Запускаем бота
-    startBot();
+    await startBot();
     
     // Настраиваем самопинг
     setupSelfPing();
-});
 
-// Обработка завершения процесса
-process.on('SIGINT', async () => {
-    console.log('⏹️  Получен сигнал остановки...');
-    if (bot) {
-        await bot.disconnect();
-        console.log('👋 Бот отключен');
-    }
-    process.exit(0);
-});
-
-process.on('SIGTERM', async () => {
-    console.log('⏹️  Получен сигнал завершения...');
-    if (bot) {
-        await bot.disconnect();
-        console.log('👋 Бот отключен');
-    }
-    process.exit(0);
+    // Регистрируем EventSub подписки с задержкой 20 секунд,
+    // чтобы сервер успел подняться и обработать challenge от Twitch
+    console.log('⏳ EventSub: ждём 20 секунд перед регистрацией подписок...');
+    setTimeout(() => subscribeToStreamEvents(), 20_000);
 });
