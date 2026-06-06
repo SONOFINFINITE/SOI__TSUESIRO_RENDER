@@ -39,12 +39,15 @@ app.get('/health', (req, res) => {
 
 // Endpoint для получения статистики
 app.get('/stats', (req, res) => {
+    const streamOnline = interval25 !== null && interval60 !== null;
     res.json({
         status: 'running',
         channel: config.channel,
         botUsername: config.botUsername,
         uptime: process.uptime(),
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        stream: streamOnline ? 'online' : 'offline',
+        scheduledMessages: streamOnline ? 'active (every 25 min + every 60 min)' : 'inactive (stream offline)'
     });
 });
 
@@ -80,7 +83,8 @@ function setupSelfPing() {
     cron.schedule('*/5 * * * *', async () => {
         try {
             const response = await axios.get(`${config.renderUrl}/health`);
-            console.log(`🏓 Самопинг выполнен: ${response.data.status} - ${new Date().toISOString()}`);
+            const streamStatus = interval25 !== null ? 'stream: online 🟢' : 'stream: offline 🔴';
+            console.log(`🏓 Самопинг выполнен: ${response.data.status} | ${streamStatus} - ${new Date().toISOString()}`);
         } catch (error) {
             console.error('❌ Ошибка самопинга:', error.message);
         }
@@ -91,30 +95,46 @@ function setupSelfPing() {
 
 // ─── EventSub: плановые сообщения по вебхукам ───────────────────────────────
 
-const SCHEDULED_MESSAGE = 'Если хотите знать о СыСществовании вне стримов,  то добро пожаловать на мою тг грядку t.me/cbicran';
-const CHAT_INTERVAL_MS = 25 * 60 * 1000; // 25 минут
+const SCHEDULED_MESSAGE_25 = 'Если хотите знать о СыСществовании вне стримов,  то добро пожаловать на мою тг грядку t.me/cbicran';
+const SCHEDULED_MESSAGE_60 = 'Если хотите поддержать меня копейком или подаркой,  то в описании есть ссылочки на актуальные сервисы <3';
 
-let scheduledMessageInterval = null;
+const INTERVAL_25_MS = 25 * 60 * 1000; // 25 минут
+const INTERVAL_60_MS = 60 * 60 * 1000; // 60 минут
+
+let interval25 = null;
+let interval60 = null;
 
 function startScheduledMessages() {
-    if (scheduledMessageInterval) return; // уже запущен
-    console.log('▶️  Стрим онлайн — запускаем плановые сообщения каждые 25 минут');
+    if (interval25 && interval60) return; // уже запущены
+    console.log('▶️  Стрим онлайн — запускаем плановые сообщения (каждые 25 и 60 минут)');
 
-    scheduledMessageInterval = setInterval(async () => {
+    interval25 = setInterval(async () => {
         if (!bot) return;
         try {
-            await bot.client.say(`#${config.channel}`, SCHEDULED_MESSAGE);
-            console.log(`📨 Плановое сообщение отправлено в ${new Date().toISOString()}`);
+            await bot.client.say(`#${config.channel}`, SCHEDULED_MESSAGE_25);
+            console.log(`📨 [25мин] Плановое сообщение отправлено в ${new Date().toISOString()}`);
         } catch (error) {
-            console.error('❌ Ошибка при отправке планового сообщения:', error.message);
+            console.error('❌ Ошибка при отправке сообщения [25мин]:', error.message);
         }
-    }, CHAT_INTERVAL_MS);
+    }, INTERVAL_25_MS);
+
+    interval60 = setInterval(async () => {
+        if (!bot) return;
+        try {
+            await bot.client.say(`#${config.channel}`, SCHEDULED_MESSAGE_60);
+            console.log(`📨 [60мин] Плановое сообщение отправлено в ${new Date().toISOString()}`);
+        } catch (error) {
+            console.error('❌ Ошибка при отправке сообщения [60мин]:', error.message);
+        }
+    }, INTERVAL_60_MS);
 }
 
 function stopScheduledMessages() {
-    if (!scheduledMessageInterval) return;
-    clearInterval(scheduledMessageInterval);
-    scheduledMessageInterval = null;
+    if (!interval25 && !interval60) return;
+    clearInterval(interval25);
+    clearInterval(interval60);
+    interval25 = null;
+    interval60 = null;
     console.log('⏹️  Стрим оффлайн — плановые сообщения остановлены');
 }
 
