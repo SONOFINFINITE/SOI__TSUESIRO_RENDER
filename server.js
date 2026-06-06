@@ -98,8 +98,8 @@ function setupSelfPing() {
 const SCHEDULED_MESSAGE_25 = 'Если хотите знать о СыСществовании вне стримов,  то добро пожаловать на мою тг грядку t.me/cbicran';
 const SCHEDULED_MESSAGE_60 = 'Если хотите поддержать меня копейком или подаркой,  то в описании есть ссылочки на актуальные сервисы <3';
 
-const INTERVAL_25_MS = 2 * 60 * 1000; // 25 минут
-const INTERVAL_60_MS = 5 * 60 * 1000; // 60 минут
+const INTERVAL_25_MS = 25 * 60 * 1000; // 25 минут
+const INTERVAL_60_MS = 60 * 60 * 1000; // 60 минут
 
 let interval25 = null;
 let interval60 = null;
