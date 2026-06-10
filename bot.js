@@ -122,7 +122,7 @@ export class TwitchBot {
         if (!msg.startsWith('!') || !this.db) return;
 
         const command = getCommandByTrigger(this.db, msg);
-        if (!command) return;
+        if (!command || !command.enabled) return;
 
         const result = this.executeCommand(command, username);
 

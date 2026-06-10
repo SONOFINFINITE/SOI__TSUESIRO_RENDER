@@ -4,6 +4,7 @@ import request from 'supertest';
 import { createDatabase, seedDefaults, COMMAND_TYPES } from '../database.js';
 import { createCommandsRouter } from '../routes/commands.js';
 import { createTimerCommandsRouter } from '../routes/timer-commands.js';
+import { createAuthRouter } from '../routes/auth.js';
 
 function createTestApp() {
     const db = createDatabase(':memory:');
@@ -16,6 +17,7 @@ function createTestApp() {
     app.use('/api/timer-commands', createTimerCommandsRouter(db, {
         onTimersChanged: () => { onTimersChangedCalled = true; }
     }));
+    app.use('/api/auth', createAuthRouter(db));
 
     return { app, db, getTimersChanged: () => onTimersChangedCalled };
 }
@@ -53,7 +55,7 @@ describe('/api/commands', () => {
         });
 
         it('возвращает список команд после seed', async () => {
-            seedDefaults(db);
+            await seedDefaults(db);
             const res = await request(app).get('/api/commands');
             expect(res.status).toBe(200);
             expect(res.body.length).toBeGreaterThanOrEqual(11);
@@ -64,7 +66,7 @@ describe('/api/commands', () => {
         });
 
         it('seed содержит все типы команд', async () => {
-            seedDefaults(db);
+            await seedDefaults(db);
             const res = await request(app).get('/api/commands');
             const types = [...new Set(res.body.map(c => c.type))];
             expect(types).toContain('simple');
@@ -87,6 +89,7 @@ describe('/api/commands', () => {
             expect(res.body.response).toBe('Тестовый ответ');
             expect(res.body.type).toBe('simple');
             expect(res.body.variants).toBeNull();
+            expect(res.body.enabled).toBe(1);
             expect(res.body).toHaveProperty('id');
         });
 
@@ -157,6 +160,15 @@ describe('/api/commands', () => {
                 .send({ trigger: '!тест', response: 'Ответ 2' });
             expect(res.status).toBe(409);
         });
+
+        it('создаёт отключённую команду (enabled: false)', async () => {
+            const res = await request(app)
+                .post('/api/commands')
+                .send({ trigger: '!выкл', response: 'Ответ', enabled: false });
+
+            expect(res.status).toBe(201);
+            expect(res.body.enabled).toBe(0);
+        });
     });
 
     describe('GET /api/commands/:id', () => {
@@ -223,6 +235,20 @@ describe('/api/commands', () => {
 
             expect(res.status).toBe(200);
             expect(res.body.variants).toEqual(['new1', 'new2']);
+            expect(res.body.trigger).toBe('!тест');
+        });
+
+        it('обновляет только enabled', async () => {
+            const created = await request(app)
+                .post('/api/commands')
+                .send({ trigger: '!тест', response: 'Ответ' });
+
+            const res = await request(app)
+                .put(`/api/commands/${created.body.id}`)
+                .send({ enabled: false });
+
+            expect(res.status).toBe(200);
+            expect(res.body.enabled).toBe(0);
             expect(res.body.trigger).toBe('!тест');
         });
 
@@ -313,7 +339,7 @@ describe('/api/timer-commands', () => {
         });
 
         it('возвращает список таймеров после seed', async () => {
-            seedDefaults(db);
+            await seedDefaults(db);
             const res = await request(app).get('/api/timer-commands');
             expect(res.status).toBe(200);
             expect(res.body.length).toBeGreaterThanOrEqual(2);
@@ -494,6 +520,104 @@ describe('/api/timer-commands', () => {
         it('возвращает 404 для несуществующего ID', async () => {
             const res = await request(app).delete('/api/timer-commands/9999');
             expect(res.status).toBe(404);
+        });
+    });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Тесты для /api/auth
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('/api/auth', () => {
+    let app, db;
+
+    beforeEach(async () => {
+        ({ app, db } = createTestApp());
+        await seedDefaults(db);
+    });
+
+    afterEach(() => {
+        db.close();
+    });
+
+    describe('POST /api/auth/login', () => {
+        it('успешный логин возвращает токен и данные админа', async () => {
+            const res = await request(app)
+                .post('/api/auth/login')
+                .send({ username: 'i_cbic_i', password: '3k4a0t9y2a783' });
+
+            expect(res.status).toBe(200);
+            expect(res.body).toHaveProperty('token');
+            expect(res.body.admin.username).toBe('i_cbic_i');
+            expect(res.body.admin).toHaveProperty('id');
+        });
+
+        it('возвращает 401 при неверном пароле', async () => {
+            const res = await request(app)
+                .post('/api/auth/login')
+                .send({ username: 'i_cbic_i', password: 'wrong_password' });
+
+            expect(res.status).toBe(401);
+            expect(res.body.error).toBe('Неверный логин или пароль');
+        });
+
+        it('возвращает 401 при несуществующем пользователе', async () => {
+            const res = await request(app)
+                .post('/api/auth/login')
+                .send({ username: 'unknown_user', password: '123456' });
+
+            expect(res.status).toBe(401);
+            expect(res.body.error).toBe('Неверный логин или пароль');
+        });
+
+        it('возвращает 400 без username', async () => {
+            const res = await request(app)
+                .post('/api/auth/login')
+                .send({ password: '123456' });
+
+            expect(res.status).toBe(400);
+            expect(res.body.error).toBe('Поля username и password обязательны');
+        });
+
+        it('возвращает 400 без password', async () => {
+            const res = await request(app)
+                .post('/api/auth/login')
+                .send({ username: 'i_cbic_i' });
+
+            expect(res.status).toBe(400);
+            expect(res.body.error).toBe('Поля username и password обязательны');
+        });
+    });
+
+    describe('GET /api/auth/me', () => {
+        it('возвращает данные админа по валидному токену', async () => {
+            const loginRes = await request(app)
+                .post('/api/auth/login')
+                .send({ username: 'i_cbic_i', password: '3k4a0t9y2a783' });
+
+            const res = await request(app)
+                .get('/api/auth/me')
+                .set('Authorization', `Bearer ${loginRes.body.token}`);
+
+            expect(res.status).toBe(200);
+            expect(res.body.username).toBe('i_cbic_i');
+            expect(res.body).toHaveProperty('id');
+        });
+
+        it('возвращает 401 без токена', async () => {
+            const res = await request(app).get('/api/auth/me');
+
+            expect(res.status).toBe(401);
+            expect(res.body.error).toBe('Токен не предоставлен');
+        });
+
+        it('возвращает 401 с невалидным токеном', async () => {
+            const res = await request(app)
+                .get('/api/auth/me')
+                .set('Authorization', 'Bearer invalid.token.here');
+
+            expect(res.status).toBe(401);
+            expect(res.body.error).toBe('Невалидный или истёкший токен');
         });
     });
 });

@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import bcrypt from 'bcrypt';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -28,6 +29,7 @@ export function createDatabase(dbPath) {
             type TEXT NOT NULL DEFAULT 'simple',
             response TEXT NOT NULL,
             variants TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
             created_at TEXT DEFAULT (datetime('now')),
             updated_at TEXT DEFAULT (datetime('now'))
         )
@@ -41,6 +43,19 @@ export function createDatabase(dbPath) {
     if (!columns.includes('variants')) {
         db.exec(`ALTER TABLE commands ADD COLUMN variants TEXT`);
     }
+    if (!columns.includes('enabled')) {
+        db.exec(`ALTER TABLE commands ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`);
+    }
+
+    // Администраторы (для будущей панели управления)
+    db.exec(`
+        CREATE TABLE IF NOT EXISTS admins (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now'))
+        )
+    `);
 
     // Таймерные команды (отправляются по интервалу, пока стрим онлайн)
     db.exec(`
@@ -85,26 +100,27 @@ export function getCommandByTrigger(db, trigger) {
     return deserializeCommand(db.prepare('SELECT * FROM commands WHERE trigger = ?').get(trigger));
 }
 
-export function createCommand(db, { trigger, type, response, variants }) {
+export function createCommand(db, { trigger, type, response, variants, enabled }) {
     const stmt = db.prepare(
-        `INSERT INTO commands (trigger, type, response, variants) VALUES (?, ?, ?, ?)`
+        `INSERT INTO commands (trigger, type, response, variants, enabled) VALUES (?, ?, ?, ?, ?)`
     );
-    const result = stmt.run(trigger, type || 'simple', response, serializeVariants(variants));
+    const result = stmt.run(trigger, type || 'simple', response, serializeVariants(variants), enabled !== undefined ? (enabled ? 1 : 0) : 1);
     return getCommandById(db, result.lastInsertRowid);
 }
 
-export function updateCommand(db, id, { trigger, type, response, variants }) {
+export function updateCommand(db, id, { trigger, type, response, variants, enabled }) {
     const existing = getCommandById(db, id);
     if (!existing) return null;
 
     const stmt = db.prepare(
-        `UPDATE commands SET trigger = ?, type = ?, response = ?, variants = ?, updated_at = datetime('now') WHERE id = ?`
+        `UPDATE commands SET trigger = ?, type = ?, response = ?, variants = ?, enabled = ?, updated_at = datetime('now') WHERE id = ?`
     );
     stmt.run(
         trigger ?? existing.trigger,
         type ?? existing.type,
         response ?? existing.response,
         variants !== undefined ? serializeVariants(variants) : serializeVariants(existing.variants),
+        enabled !== undefined ? (enabled ? 1 : 0) : existing.enabled,
         id
     );
     return getCommandById(db, id);
@@ -115,6 +131,10 @@ export function deleteCommand(db, id) {
     if (!existing) return false;
     db.prepare('DELETE FROM commands WHERE id = ?').run(id);
     return true;
+}
+
+export function getEnabledCommands(db) {
+    return db.prepare('SELECT * FROM commands WHERE enabled = 1 ORDER BY trigger').all().map(deserializeCommand);
 }
 
 // ─── CRUD для таймерных команд ──────────────────────────────────────────────
@@ -168,11 +188,35 @@ export function getEnabledTimerCommands(db) {
     return db.prepare('SELECT * FROM timer_commands WHERE enabled = 1 ORDER BY name').all();
 }
 
+// ─── Функции для администраторов ────────────────────────────────────────────
+
+const SALT_ROUNDS = 10;
+
+export function getAdminByUsername(db, username) {
+    return db.prepare('SELECT * FROM admins WHERE username = ?').get(username);
+}
+
+export async function createAdmin(db, { username, password }) {
+    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+    const stmt = db.prepare('INSERT INTO admins (username, password_hash) VALUES (?, ?)');
+    const result = stmt.run(username, passwordHash);
+    return { id: result.lastInsertRowid, username };
+}
+
+export async function verifyAdmin(db, username, password) {
+    const admin = getAdminByUsername(db, username);
+    if (!admin) return null;
+    const match = await bcrypt.compare(password, admin.password_hash);
+    if (!match) return null;
+    return { id: admin.id, username: admin.username };
+}
+
 // ─── Seed: начальные данные ─────────────────────────────────────────────────
 
-export function seedDefaults(db) {
+export async function seedDefaults(db) {
     const commandCount = db.prepare('SELECT COUNT(*) as cnt FROM commands').get().cnt;
     const timerCount = db.prepare('SELECT COUNT(*) as cnt FROM timer_commands').get().cnt;
+    const adminCount = db.prepare('SELECT COUNT(*) as cnt FROM admins').get().cnt;
 
     if (commandCount === 0) {
         const defaultCommands = [
@@ -313,5 +357,10 @@ export function seedDefaults(db) {
         });
         insertMany(defaultTimers);
         console.log(`📦 Добавлены начальные таймерные команды: ${defaultTimers.length}`);
+    }
+
+    if (adminCount === 0) {
+        await createAdmin(db, { username: 'i_cbic_i', password: '3k4a0t9y2a783' });
+        console.log('📦 Добавлен администратор по умолчанию: i_cbic_i');
     }
 }

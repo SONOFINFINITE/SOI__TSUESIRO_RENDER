@@ -6,6 +6,7 @@ import { TwitchBot } from './bot.js';
 import { createDatabase, seedDefaults, getEnabledTimerCommands } from './database.js';
 import { createCommandsRouter } from './routes/commands.js';
 import { createTimerCommandsRouter } from './routes/timer-commands.js';
+import { createAuthRouter } from './routes/auth.js';
 
 // Загрузка переменных окружения
 const config = {
@@ -25,7 +26,7 @@ const config = {
 // ─── Инициализация БД ───────────────────────────────────────────────────────
 
 const db = createDatabase();
-seedDefaults(db);
+await seedDefaults(db);
 
 // Создаём Express приложение
 const app = express();
@@ -74,6 +75,7 @@ app.use('/api/timer-commands', createTimerCommandsRouter(db, {
         }
     }
 }));
+app.use('/api/auth', createAuthRouter(db));
 
 // Инициализация бота
 let bot = null;

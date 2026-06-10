@@ -1,0 +1,832 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Twitch Bot API",
+    "description": "REST API для управления командами Twitch-бота (tsuesiro_bot). Позволяет добавлять, редактировать и удалять обычные чат-команды и таймерные сообщения.\n\n## Аутентификация\n\nДля доступа к защищённым эндпоинтам используется JWT-токен. Получите токен через `POST /api/auth/login` и передавайте его в заголовке `Authorization: Bearer <token>`.\n\n## Типы команд\n\nКаждая команда имеет `type`, определяющий поведение бота при вызове:\n\n| Тип | Описание | Плейсхолдеры в `response` | `variants` |\n|---|---|---|---|\n| `simple` | Статический ответ | `{user}` | не нужны |\n| `random_reply` | Случайный вариант из списка | `{user}`, `{variant}` | массив строк |\n| `random_target` | Случайный юзер из чата | `{user}`, `{target}` | не нужны |\n| `random_target_action` | Случайный юзер + действие | `{user}`, `{target}`, `{variant}` | массив строк (действия) |\n| `random_percent_target` | Проценты + случайный юзер | `{user}`, `{target}`, `{percent}` | не нужны |\n| `random_range` | Диапазоны с числом | `{user}`, `{variant}`, `{size}` | массив объектов `{min, max, text}` |\n\n## Таймерные команды\n\nОтправляются в чат автоматически по интервалу, пока стрим онлайн. При изменении через API — таймеры перезапускаются автоматически.",
+    "version": "1.0.0",
+    "contact": {
+      "name": "I_CbIC_I"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://soi-tsuesiro-render.onrender.com",
+      "description": "Production (Render.com)"
+    }
+  ],
+  "tags": [
+    {
+      "name": "General",
+      "description": "Общие эндпоинты сервера"
+    },
+    {
+      "name": "Commands",
+      "description": "Управление чат-командами бота"
+    },
+    {
+      "name": "Timer Commands",
+      "description": "Управление таймерными (по расписанию) сообщениями"
+    },
+    {
+      "name": "Auth",
+      "description": "Аутентификация администратора для панели управления"
+    }
+  ],
+  "paths": {
+    "/": {
+      "get": {
+        "tags": ["General"],
+        "summary": "Статус сервера",
+        "description": "Возвращает информацию о состоянии сервера и аптайме",
+        "responses": {
+          "200": {
+            "description": "Сервер работает",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "online" },
+                    "bot": { "type": "string", "example": "Twitch Bot" },
+                    "uptime": { "type": "number", "example": 12345.678 },
+                    "timestamp": { "type": "string", "format": "date-time" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": ["General"],
+        "summary": "Health check",
+        "description": "Простая проверка работоспособности для Render.com",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "ok" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/stats": {
+      "get": {
+        "tags": ["General"],
+        "summary": "Статистика бота",
+        "description": "Возвращает статистику работы бота: канал, статус стрима, активные таймеры",
+        "responses": {
+          "200": {
+            "description": "Статистика",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string", "example": "running" },
+                    "channel": { "type": "string", "example": "I_CbIC_I" },
+                    "botUsername": { "type": "string", "example": "tsuesiro_bot" },
+                    "uptime": { "type": "number", "example": 12345.678 },
+                    "timestamp": { "type": "string", "format": "date-time" },
+                    "stream": { "type": "string", "enum": ["online", "offline"], "example": "offline" },
+                    "activeTimers": { "type": "integer", "example": 0 }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/commands/types": {
+      "get": {
+        "tags": ["Commands"],
+        "summary": "Список допустимых типов команд",
+        "description": "Возвращает массив допустимых значений для поля `type`",
+        "responses": {
+          "200": {
+            "description": "Массив типов",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "example": ["simple", "random_reply", "random_target", "random_target_action", "random_percent_target", "random_range"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/commands": {
+      "get": {
+        "tags": ["Commands"],
+        "summary": "Список всех команд",
+        "description": "Возвращает все чат-команды бота, отсортированные по триггеру",
+        "responses": {
+          "200": {
+            "description": "Массив команд",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/Command" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Commands"],
+        "summary": "Создать команду",
+        "description": "Создаёт новую чат-команду. При type=simple можно не передавать variants.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CommandCreate" },
+              "examples": {
+                "simple": {
+                  "summary": "Простая команда",
+                  "value": {
+                    "trigger": "!вк",
+                    "response": "@{user}, Паблик - https://vk.com/sys_vtube"
+                  }
+                },
+                "random_reply": {
+                  "summary": "Рандомный ответ",
+                  "value": {
+                    "trigger": "!сыс",
+                    "type": "random_reply",
+                    "response": "Поздравляю, @{user}, сегодня ты - {variant}!",
+                    "variants": ["Довольная СыСя", "Злая СыС", "Голодная СыСня"]
+                  }
+                },
+                "random_target": {
+                  "summary": "Случайный юзер",
+                  "value": {
+                    "trigger": "!почухать",
+                    "type": "random_target",
+                    "response": "@{user}, нежно чухает за ушком @{target}"
+                  }
+                },
+                "random_target_action": {
+                  "summary": "Случайное действие + юзер",
+                  "value": {
+                    "trigger": "!шалость",
+                    "type": "random_target_action",
+                    "response": "@{user}, {variant} @{target}",
+                    "variants": ["Жестко отхлестал", "похитил", "зовет на свидание"]
+                  }
+                },
+                "random_percent_target": {
+                  "summary": "Проценты + юзер",
+                  "value": {
+                    "trigger": "!любовь",
+                    "type": "random_percent_target",
+                    "response": "{percent}% любви между @{user} и @{target}"
+                  }
+                },
+                "random_range": {
+                  "summary": "Диапазоны с числом",
+                  "value": {
+                    "trigger": "!биба",
+                    "type": "random_range",
+                    "response": "@{user}, {variant}",
+                    "variants": [
+                      { "min": 1, "max": 10, "text": "{size}см маленький" },
+                      { "min": 11, "max": 25, "text": "{size}см большой" },
+                      { "min": 0, "max": 0, "text": "Ой, пипка отвалилась" }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Команда создана",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Command" }
+              }
+            }
+          },
+          "400": {
+            "description": "Ошибка валидации (отсутствует trigger/response или недопустимый type)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "409": {
+            "description": "Команда с таким триггером уже существует",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/commands/{id}": {
+      "get": {
+        "tags": ["Commands"],
+        "summary": "Получить команду по ID",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer" },
+            "description": "ID команды"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Команда найдена",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Command" }
+              }
+            }
+          },
+          "404": {
+            "description": "Команда не найдена",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": ["Commands"],
+        "summary": "Обновить команду",
+        "description": "Частичное обновление — можно передать только те поля, которые нужно изменить",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer" },
+            "description": "ID команды"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CommandUpdate" },
+              "examples": {
+                "update_response": {
+                  "summary": "Обновить текст ответа",
+                  "value": { "response": "@{user}, Новый текст ответа" }
+                },
+                "update_variants": {
+                  "summary": "Обновить варианты",
+                  "value": { "variants": ["Новый вариант 1", "Новый вариант 2"] }
+                },
+                "change_type": {
+                  "summary": "Сменить тип команды",
+                  "value": {
+                    "type": "random_reply",
+                    "response": "@{user}, {variant}",
+                    "variants": ["Вариант A", "Вариант B"]
+                  }
+                },
+                "toggle_enabled": {
+                  "summary": "Отключить команду",
+                  "value": { "enabled": false }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Команда обновлена",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Command" }
+              }
+            }
+          },
+          "400": {
+            "description": "Ошибка валидации",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "404": {
+            "description": "Команда не найдена",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "409": {
+            "description": "Конфликт триггера",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["Commands"],
+        "summary": "Удалить команду",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer" },
+            "description": "ID команды"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Команда удалена"
+          },
+          "404": {
+            "description": "Команда не найдена",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/timer-commands": {
+      "get": {
+        "tags": ["Timer Commands"],
+        "summary": "Список всех таймерных команд",
+        "description": "Возвращает все таймерные сообщения, отсортированные по имени",
+        "responses": {
+          "200": {
+            "description": "Массив таймерных команд",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/TimerCommand" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["Timer Commands"],
+        "summary": "Создать таймерную команду",
+        "description": "Создаёт новое таймерное сообщение. По умолчанию interval_minutes=25, enabled=true. При изменении автоматически перезапускаются активные таймеры.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TimerCommandCreate" },
+              "examples": {
+                "basic": {
+                  "summary": "Промо телеграма",
+                  "value": {
+                    "name": "tg_promo",
+                    "message": "Подпишись на телегу t.me/cbicran",
+                    "interval_minutes": 25
+                  }
+                },
+                "with_enabled": {
+                  "summary": "Отключённая команда",
+                  "value": {
+                    "name": "donate_promo",
+                    "message": "Ссылки на донат в описании!",
+                    "interval_minutes": 60,
+                    "enabled": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Таймерная команда создана",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TimerCommand" }
+              }
+            }
+          },
+          "400": {
+            "description": "Ошибка валидации",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "409": {
+            "description": "Таймерная команда с таким именем уже существует",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/timer-commands/{id}": {
+      "get": {
+        "tags": ["Timer Commands"],
+        "summary": "Получить таймерную команду по ID",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer" },
+            "description": "ID таймерной команды"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Таймерная команда найдена",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TimerCommand" }
+              }
+            }
+          },
+          "404": {
+            "description": "Таймерная команда не найдена",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": ["Timer Commands"],
+        "summary": "Обновить таймерную команду",
+        "description": "Частичное обновление. При изменении автоматически перезапускаются активные таймеры (если стрим онлайн).",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer" },
+            "description": "ID таймерной команды"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TimerCommandUpdate" },
+              "examples": {
+                "update_message": {
+                  "summary": "Обновить текст сообщения",
+                  "value": { "message": "Новый текст таймерного сообщения!" }
+                },
+                "toggle_enabled": {
+                  "summary": "Отключить таймер",
+                  "value": { "enabled": false }
+                },
+                "change_interval": {
+                  "summary": "Изменить интервал",
+                  "value": { "interval_minutes": 45 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Таймерная команда обновлена",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TimerCommand" }
+              }
+            }
+          },
+          "400": {
+            "description": "Ошибка валидации",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "404": {
+            "description": "Таймерная команда не найдена",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "409": {
+            "description": "Конфликт имени",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["Timer Commands"],
+        "summary": "Удалить таймерную команду",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer" },
+            "description": "ID таймерной команды"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Таймерная команда удалена"
+          },
+          "404": {
+            "description": "Таймерная команда не найдена",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "tags": ["Auth"],
+        "summary": "Логин администратора",
+        "description": "Аутентификация по логину и паролю. Возвращает JWT-токен для доступа к защищённым эндпоинтам.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/LoginRequest" },
+              "example": {
+                "username": "i_cbic_i",
+                "password": "your_password"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Успешная аутентификация",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/LoginResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Не указаны username или password",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          },
+          "401": {
+            "description": "Неверный логин или пароль",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "tags": ["Auth"],
+        "summary": "Текущий администратор",
+        "description": "Возвращает данные текущего администратора по JWT-токену из заголовка Authorization",
+        "security": [{ "bearerAuth": [] }],
+        "responses": {
+          "200": {
+            "description": "Данные администратора",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AdminInfo" }
+              }
+            }
+          },
+          "401": {
+            "description": "Токен не предоставлен или невалиден",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT-токен, полученный через /api/auth/login"
+      }
+    },
+    "schemas": {
+      "Command": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "example": 1 },
+          "trigger": { "type": "string", "example": "!вк", "description": "Триггер команды (начинается с !)" },
+          "type": {
+            "type": "string",
+            "enum": ["simple", "random_reply", "random_target", "random_target_action", "random_percent_target", "random_range"],
+            "example": "simple",
+            "description": "Тип поведения команды"
+          },
+          "response": { "type": "string", "example": "@{user}, Паблик - https://vk.com/sys_vtube", "description": "Шаблон ответа с плейсхолдерами" },
+          "variants": {
+            "description": "Массив вариантов (строки или объекты {min, max, text} для random_range). null для типов без вариантов.",
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              {
+                "type": "array",
+                "items": { "$ref": "#/components/schemas/RangeVariant" }
+              }
+            ],
+            "example": null
+          },
+          "enabled": { "type": "integer", "enum": [0, 1], "example": 1, "description": "Активна ли команда (1 = да, 0 = нет)" },
+          "created_at": { "type": "string", "format": "date-time", "example": "2025-01-15 12:00:00" },
+          "updated_at": { "type": "string", "format": "date-time", "example": "2025-01-15 12:00:00" }
+        }
+      },
+      "CommandCreate": {
+        "type": "object",
+        "required": ["trigger", "response"],
+        "properties": {
+          "trigger": { "type": "string", "example": "!тг", "description": "Триггер команды (начинается с !)" },
+          "type": {
+            "type": "string",
+            "enum": ["simple", "random_reply", "random_target", "random_target_action", "random_percent_target", "random_range"],
+            "default": "simple",
+            "description": "Тип поведения. По умолчанию simple"
+          },
+          "response": { "type": "string", "example": "@{user}, Телега - https://t.me/cbicran", "description": "Шаблон ответа с плейсхолдерами" },
+          "variants": {
+            "description": "Массив вариантов (обязателен для random_reply, random_target_action, random_range)",
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              {
+                "type": "array",
+                "items": { "$ref": "#/components/schemas/RangeVariant" }
+              }
+            ]
+          },
+          "enabled": { "type": "boolean", "default": true, "description": "Активировать команду (по умолчанию true)" }
+        }
+      },
+      "CommandUpdate": {
+        "type": "object",
+        "description": "Нужно указать хотя бы одно поле",
+        "properties": {
+          "trigger": { "type": "string" },
+          "type": {
+            "type": "string",
+            "enum": ["simple", "random_reply", "random_target", "random_target_action", "random_percent_target", "random_range"]
+          },
+          "response": { "type": "string" },
+          "variants": {
+            "nullable": true,
+            "oneOf": [
+              {
+                "type": "array",
+                "items": { "type": "string" }
+              },
+              {
+                "type": "array",
+                "items": { "$ref": "#/components/schemas/RangeVariant" }
+              }
+            ]
+          },
+          "enabled": { "type": "boolean" }
+        }
+      },
+      "RangeVariant": {
+        "type": "object",
+        "description": "Вариант для типа random_range — диапазон чисел с шаблоном текста",
+        "required": ["min", "max", "text"],
+        "properties": {
+          "min": { "type": "integer", "example": 1, "description": "Минимальное значение" },
+          "max": { "type": "integer", "example": 10, "description": "Максимальное значение" },
+          "text": { "type": "string", "example": "{size}см маленький", "description": "Текст с плейсхолдером {size}" }
+        }
+      },
+      "TimerCommand": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "example": 1 },
+          "name": { "type": "string", "example": "tg_promo", "description": "Уникальное имя таймера" },
+          "message": { "type": "string", "example": "Подпишись на телегу t.me/cbicran", "description": "Текст сообщения, отправляемого в чат" },
+          "interval_minutes": { "type": "integer", "example": 25, "description": "Интервал отправки в минутах" },
+          "enabled": { "type": "integer", "enum": [0, 1], "example": 1, "description": "Активен ли таймер (1 = да, 0 = нет)" },
+          "created_at": { "type": "string", "format": "date-time", "example": "2025-01-15 12:00:00" },
+          "updated_at": { "type": "string", "format": "date-time", "example": "2025-01-15 12:00:00" }
+        }
+      },
+      "TimerCommandCreate": {
+        "type": "object",
+        "required": ["name", "message"],
+        "properties": {
+          "name": { "type": "string", "example": "tg_promo", "description": "Уникальное имя таймера" },
+          "message": { "type": "string", "example": "Подпишись на телегу!", "description": "Текст сообщения" },
+          "interval_minutes": { "type": "integer", "default": 25, "minimum": 1, "description": "Интервал в минутах (по умолчанию 25)" },
+          "enabled": { "type": "boolean", "default": true, "description": "Активировать таймер (по умолчанию true)" }
+        }
+      },
+      "TimerCommandUpdate": {
+        "type": "object",
+        "description": "Нужно указать хотя бы одно поле",
+        "properties": {
+          "name": { "type": "string" },
+          "message": { "type": "string" },
+          "interval_minutes": { "type": "integer", "minimum": 1 },
+          "enabled": { "type": "boolean" }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": { "type": "string", "example": "Команда не найдена" }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": ["username", "password"],
+        "properties": {
+          "username": { "type": "string", "example": "i_cbic_i", "description": "Логин администратора" },
+          "password": { "type": "string", "example": "your_password", "description": "Пароль администратора" }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "properties": {
+          "token": { "type": "string", "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...", "description": "JWT-токен (действителен 24 часа)" },
+          "admin": { "$ref": "#/components/schemas/AdminInfo" }
+        }
+      },
+      "AdminInfo": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer", "example": 1 },
+          "username": { "type": "string", "example": "i_cbic_i" }
+        }
+      }
+    }
+  }
+}

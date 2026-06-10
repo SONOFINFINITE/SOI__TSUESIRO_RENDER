@@ -27,7 +27,7 @@ export function createCommandsRouter(db) {
 
     // POST /api/commands — создать команду
     router.post('/', (req, res) => {
-        const { trigger, type, response, variants } = req.body;
+        const { trigger, type, response, variants, enabled } = req.body;
 
         if (!trigger || !response) {
             return res.status(400).json({ error: 'Поля trigger и response обязательны' });
@@ -40,7 +40,7 @@ export function createCommandsRouter(db) {
         }
 
         try {
-            const command = createCommand(db, { trigger, type, response, variants });
+            const command = createCommand(db, { trigger, type, response, variants, enabled });
             res.status(201).json(command);
         } catch (err) {
             if (err.message.includes('UNIQUE')) {
@@ -52,9 +52,9 @@ export function createCommandsRouter(db) {
 
     // PUT /api/commands/:id — обновить команду
     router.put('/:id', (req, res) => {
-        const { trigger, type, response, variants } = req.body;
+        const { trigger, type, response, variants, enabled } = req.body;
 
-        if (!trigger && !type && !response && variants === undefined) {
+        if (!trigger && !type && !response && variants === undefined && enabled === undefined) {
             return res.status(400).json({ error: 'Нужно указать хотя бы одно поле для обновления' });
         }
 
@@ -65,7 +65,7 @@ export function createCommandsRouter(db) {
         }
 
         try {
-            const command = updateCommand(db, Number(req.params.id), { trigger, type, response, variants });
+            const command = updateCommand(db, Number(req.params.id), { trigger, type, response, variants, enabled });
             if (!command) return res.status(404).json({ error: 'Команда не найдена' });
             res.json(command);
         } catch (err) {
