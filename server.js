@@ -3,6 +3,9 @@ import cron from 'node-cron';
 import axios from 'axios';
 import crypto from 'crypto';
 import { TwitchBot } from './bot.js';
+import { createDatabase, seedDefaults, getEnabledTimerCommands } from './database.js';
+import { createCommandsRouter } from './routes/commands.js';
+import { createTimerCommandsRouter } from './routes/timer-commands.js';
 
 // Загрузка переменных окружения
 const config = {
@@ -19,8 +22,16 @@ const config = {
     clientSecret: process.env.TWITCH_CLIENT_SECRET || ''
 };
 
+// ─── Инициализация БД ───────────────────────────────────────────────────────
+
+const db = createDatabase();
+seedDefaults(db);
+
 // Создаём Express приложение
 const app = express();
+
+// JSON body parser для API роутов
+app.use('/api', express.json());
 
 // Простой endpoint для проверки работы
 app.get('/', (req, res) => {
@@ -39,7 +50,7 @@ app.get('/health', (req, res) => {
 
 // Endpoint для получения статистики
 app.get('/stats', (req, res) => {
-    const streamOnline = interval25 !== null && interval60 !== null;
+    const streamOnline = timerIntervals.length > 0;
     res.json({
         status: 'running',
         channel: config.channel,
@@ -47,9 +58,22 @@ app.get('/stats', (req, res) => {
         uptime: process.uptime(),
         timestamp: new Date().toISOString(),
         stream: streamOnline ? 'online' : 'offline',
-        scheduledMessages: streamOnline ? 'active (every 25 min + every 60 min)' : 'inactive (stream offline)'
+        activeTimers: timerIntervals.length
     });
 });
+
+// ─── REST API роуты ─────────────────────────────────────────────────────────
+
+app.use('/api/commands', createCommandsRouter(db));
+app.use('/api/timer-commands', createTimerCommandsRouter(db, {
+    onTimersChanged: () => {
+        // Перезапускаем таймеры, если стрим онлайн
+        if (timerIntervals.length > 0) {
+            stopScheduledMessages();
+            startScheduledMessages();
+        }
+    }
+}));
 
 // Инициализация бота
 let bot = null;
@@ -64,7 +88,7 @@ async function startBot() {
             return;
         }
         
-        bot = new TwitchBot(config);
+        bot = new TwitchBot(config, db);
         await bot.connect();
         console.log('✅ Бот успешно запущен и подключен к чату!');
     } catch (error) {
@@ -83,7 +107,7 @@ function setupSelfPing() {
     cron.schedule('*/5 * * * *', async () => {
         try {
             const response = await axios.get(`${config.renderUrl}/health`);
-            const streamStatus = interval25 !== null ? 'stream: online 🟢' : 'stream: offline 🔴';
+            const streamStatus = timerIntervals.length > 0 ? 'stream: online 🟢' : 'stream: offline 🔴';
             console.log(`🏓 Самопинг выполнен: ${response.data.status} | ${streamStatus} - ${new Date().toISOString()}`);
         } catch (error) {
             console.error('❌ Ошибка самопинга:', error.message);
@@ -93,48 +117,43 @@ function setupSelfPing() {
     console.log('✅ Самопинг настроен (каждые 5 минут)');
 }
 
-// ─── EventSub: плановые сообщения по вебхукам ───────────────────────────────
+// ─── Таймерные сообщения из БД ──────────────────────────────────────────────
 
-const SCHEDULED_MESSAGE_25 = 'Если хотите знать о СыСществовании вне стримов,  то добро пожаловать на мою тг грядку t.me/cbicran';
-const SCHEDULED_MESSAGE_60 = 'Если хотите поддержать меня копейком или подаркой,  то в описании есть ссылочки на актуальные сервисы <3';
-
-const INTERVAL_25_MS = 25 * 60 * 1000; // 25 минут
-const INTERVAL_60_MS = 60 * 60 * 1000; // 60 минут
-
-let interval25 = null;
-let interval60 = null;
+let timerIntervals = [];
 
 function startScheduledMessages() {
-    if (interval25 && interval60) return; // уже запущены
-    console.log('▶️  Стрим онлайн — запускаем плановые сообщения (каждые 25 и 60 минут)');
+    if (timerIntervals.length > 0) return; // уже запущены
 
-    interval25 = setInterval(async () => {
-        if (!bot) return;
-        try {
-            await bot.client.say(`#${config.channel}`, SCHEDULED_MESSAGE_25);
-            console.log(`📨 [25мин] Плановое сообщение отправлено в ${new Date().toISOString()}`);
-        } catch (error) {
-            console.error('❌ Ошибка при отправке сообщения [25мин]:', error.message);
-        }
-    }, INTERVAL_25_MS);
+    const timers = getEnabledTimerCommands(db);
+    if (timers.length === 0) {
+        console.log('⚠️  Нет активных таймерных команд в БД');
+        return;
+    }
 
-    interval60 = setInterval(async () => {
-        if (!bot) return;
-        try {
-            await bot.client.say(`#${config.channel}`, SCHEDULED_MESSAGE_60);
-            console.log(`📨 [60мин] Плановое сообщение отправлено в ${new Date().toISOString()}`);
-        } catch (error) {
-            console.error('❌ Ошибка при отправке сообщения [60мин]:', error.message);
-        }
-    }, INTERVAL_60_MS);
+    console.log(`▶️  Стрим онлайн — запускаем ${timers.length} таймерных сообщений`);
+
+    for (const timer of timers) {
+        const intervalMs = timer.interval_minutes * 60 * 1000;
+        const id = setInterval(async () => {
+            if (!bot) return;
+            try {
+                await bot.client.say(`#${config.channel}`, timer.message);
+                console.log(`📨 [${timer.name}] Плановое сообщение отправлено в ${new Date().toISOString()}`);
+            } catch (error) {
+                console.error(`❌ Ошибка при отправке сообщения [${timer.name}]:`, error.message);
+            }
+        }, intervalMs);
+
+        timerIntervals.push({ timerId: timer.id, intervalId: id });
+    }
 }
 
 function stopScheduledMessages() {
-    if (!interval25 && !interval60) return;
-    clearInterval(interval25);
-    clearInterval(interval60);
-    interval25 = null;
-    interval60 = null;
+    if (timerIntervals.length === 0) return;
+    for (const { intervalId } of timerIntervals) {
+        clearInterval(intervalId);
+    }
+    timerIntervals = [];
     console.log('⏹️  Стрим оффлайн — плановые сообщения остановлены');
 }
 
@@ -287,21 +306,27 @@ async function subscribeToStreamEvents() {
     }
 }
 
+// ─── Экспорт для тестов ─────────────────────────────────────────────────────
+
+export { app, db };
+
 // ─── Запуск сервера ──────────────────────────────────────────────────────────
 
-app.listen(config.port, async () => {
-    console.log(`🌐 Сервер запущен на порту ${config.port}`);
-    console.log(`📡 Health check: http://localhost:${config.port}/health`);
-    console.log(`📊 Статистика: http://localhost:${config.port}/stats`);
-    
-    // Запускаем бота
-    await startBot();
-    
-    // Настраиваем самопинг
-    setupSelfPing();
+if (process.env.NODE_ENV !== 'test') {
+    app.listen(config.port, async () => {
+        console.log(`🌐 Сервер запущен на порту ${config.port}`);
+        console.log(`📡 Health check: http://localhost:${config.port}/health`);
+        console.log(`📊 Статистика: http://localhost:${config.port}/stats`);
+        
+        // Запускаем бота
+        await startBot();
+        
+        // Настраиваем самопинг
+        setupSelfPing();
 
-    // Регистрируем EventSub подписки с задержкой 20 секунд,
-    // чтобы сервер успел подняться и обработать challenge от Twitch
-    console.log('⏳ EventSub: ждём 20 секунд перед регистрацией подписок...');
-    setTimeout(() => subscribeToStreamEvents(), 20_000);
-});
+        // Регистрируем EventSub подписки с задержкой 20 секунд,
+        // чтобы сервер успел подняться и обработать challenge от Twitch
+        console.log('⏳ EventSub: ждём 20 секунд перед регистрацией подписок...');
+        setTimeout(() => subscribeToStreamEvents(), 20_000);
+    });
+}
