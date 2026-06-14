@@ -109,6 +109,8 @@ function setupSelfPing() {
     cron.schedule('*/5 * * * *', async () => {
         try {
             const response = await axios.get(`${config.renderUrl}/health`);
+            // Проверяем реальный статус стрима через Twitch API
+            await checkStreamStatus();
             const streamStatus = timerIntervals.length > 0 ? 'stream: online 🟢' : 'stream: offline 🔴';
             console.log(`🏓 Самопинг выполнен: ${response.data.status} | ${streamStatus} - ${new Date().toISOString()}`);
         } catch (error) {
@@ -117,6 +119,35 @@ function setupSelfPing() {
     });
     
     console.log('✅ Самопинг настроен (каждые 5 минут)');
+}
+
+// ─── Проверка статуса стрима через Twitch API ───────────────────────────────
+
+async function checkStreamStatus() {
+    try {
+        const response = await axios.get('https://api.twitch.tv/helix/streams', {
+            headers: {
+                'Authorization': `Bearer ${config.accessToken}`,
+                'Client-Id': config.clientId
+            },
+            params: { user_id: config.broadcasterId }
+        });
+
+        const isLive = response.data.data.length > 0;
+
+        if (isLive && timerIntervals.length === 0) {
+            console.log('🔄 Стрим онлайн (обнаружено при проверке) — запускаем таймеры');
+            startScheduledMessages();
+        } else if (!isLive && timerIntervals.length > 0) {
+            console.log('🔄 Стрим оффлайн (обнаружено при проверке) — останавливаем таймеры');
+            stopScheduledMessages();
+        }
+
+        return isLive;
+    } catch (error) {
+        console.error('❌ Ошибка проверки статуса стрима:', error.response?.data || error.message);
+        return null;
+    }
 }
 
 // ─── Таймерные сообщения из БД ──────────────────────────────────────────────
@@ -323,6 +354,9 @@ if (process.env.NODE_ENV !== 'test') {
         // Запускаем бота
         await startBot();
         
+        // Проверяем, не идёт ли уже стрим (на случай рестарта сервера во время стрима)
+        await checkStreamStatus();
+
         // Настраиваем самопинг
         setupSelfPing();
 
